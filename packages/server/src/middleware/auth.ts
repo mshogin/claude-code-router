@@ -3,8 +3,9 @@ import { FastifyRequest, FastifyReply } from "fastify";
 export const apiKeyAuth =
   (config: any) =>
   async (req: FastifyRequest, reply: FastifyReply, done: () => void) => {
-    // Public endpoints that don't require authentication
-    const publicPaths = ["/", "/health"];
+    // Public endpoints that don't require authentication (/metrics — Prometheus
+    // scrape без APIKEY, иначе Prometheus получит 401 и метрики не доедут).
+    const publicPaths = ["/", "/health", "/metrics"];
     if (publicPaths.includes(req.url) || req.url.startsWith("/ui")) {
       return done();
     }

@@ -8,6 +8,13 @@ import { apiKeyAuth } from "./middleware/auth";
 import { CONFIG_FILE, HOME_DIR, listPresets } from "@CCR/shared";
 import { createStream } from 'rotating-file-stream';
 import { sessionUsageCache } from "@musistudio/llms";
+import {
+  recordRequest,
+  recordTokens,
+  incStreaming,
+  decStreaming,
+  renderMetrics,
+} from "./metrics";
 import { SSEParserTransform } from "./utils/SSEParser.transform";
 import { SSESerializerTransform } from "./utils/SSESerializer.transform";
 import { rewriteStream } from "./utils/rewriteStream";
@@ -424,6 +431,28 @@ async function getServer(options: RunOptions = {}) {
     return payload;
   });
 
+  // Prometheus-метрики ccr (тег 0.1.1): засекаем /v1/messages-запросы. onRequest
+  // ставит старт + streaming gauge; onResponse пишет latency/код/токены (usage из
+  // sessionUsageCache, заполняется выше в onSend). model = body.model (то, что
+  // прислал claude-router: "provider,model_name").
+  serverInstance.addHook("onRequest", async (req: any) => {
+    if (req.url && req.url.includes("/v1/messages")) {
+      req._ccrStart = Date.now();
+      incStreaming();
+    }
+  });
+  serverInstance.addHook("onResponse", async (req: any, reply: any) => {
+    if (req._ccrStart) {
+      const seconds = (Date.now() - req._ccrStart) / 1000;
+      const model = req.body?.model || "unknown";
+      recordRequest(model, reply.statusCode, seconds);
+      try {
+        recordTokens(model, sessionUsageCache.get(req.sessionId));
+      } catch (_) {}
+      decStreaming();
+    }
+  });
+
   // Add global error handlers to prevent the service from crashing
   process.on("uncaughtException", (err) => {
     serverInstance.app.log.error("Uncaught exception:", err);
@@ -444,6 +473,11 @@ async function run() {
     }, 100);
 
     return { success: true, message: "Service restart initiated" }
+  });
+  // Prometheus scrape (public, без APIKEY — см. publicPaths в middleware/auth.ts).
+  server.app.get("/metrics", async (_req: any, reply: any) => {
+    reply.header("content-type", "text/plain; version=0.0.4");
+    return renderMetrics();
   });
   await server.start();
 }
