@@ -452,6 +452,13 @@ async function getServer(options: RunOptions = {}) {
       decStreaming();
     }
   });
+  // /metrics route — В getServer(), чтобы он был на ОБОИХ путях запуска: прямой
+  // (require.main) И CLI (`ccr start` -> getServer()). Раньше был только в run()
+  // -> при CLI-запуске (прод) отсутствовал -> 404. Public (publicPaths в auth.ts).
+  serverInstance.app.get("/metrics", async (_req: any, reply: any) => {
+    reply.header("content-type", "text/plain; version=0.0.4");
+    return renderMetrics();
+  });
 
   // Add global error handlers to prevent the service from crashing
   process.on("uncaughtException", (err) => {
@@ -474,11 +481,9 @@ async function run() {
 
     return { success: true, message: "Service restart initiated" }
   });
-  // Prometheus scrape (public, без APIKEY — см. publicPaths в middleware/auth.ts).
-  server.app.get("/metrics", async (_req: any, reply: any) => {
-    reply.header("content-type", "text/plain; version=0.0.4");
-    return renderMetrics();
-  });
+  // /metrics route регистрируется в getServer() (выше) -> доступен на ОБОИХ путях
+  // запуска (прямой require.main И CLI `ccr start`). Здесь дублировать НЕЛЬЗЯ
+  // (fastify: route already registered).
   await server.start();
 }
 
