@@ -435,10 +435,22 @@ async function getServer(options: RunOptions = {}) {
   // ставит старт + streaming gauge; onResponse пишет latency/код/токены (usage из
   // sessionUsageCache, заполняется выше в onSend). model = body.model (то, что
   // прислал claude-router: "provider,model_name").
-  serverInstance.addHook("onRequest", async (req: any) => {
+  serverInstance.addHook("onRequest", async (req: any, reply: any) => {
     if (req.url && req.url.includes("/v1/messages")) {
       req._ccrStart = Date.now();
+      req._ccrCounted = true;
       incStreaming();
+      // Декремент gauge на ЗАКРЫТИИ соединения (raw 'close' срабатывает на ВСЕХ
+      // терминальных путях: нормальный finish И обрыв клиента/abort И зависание
+      // upstream, когда claude-router рвёт по ResponseHeaderTimeout). onResponse
+      // НЕ срабатывает при abort -> раньше inc без dec -> ccr_streaming_active тёк
+      // (наблюдали 453). once-guard: ровно один dec на inc.
+      reply.raw.on("close", () => {
+        if (req._ccrCounted) {
+          req._ccrCounted = false;
+          decStreaming();
+        }
+      });
     }
   });
   serverInstance.addHook("onResponse", async (req: any, reply: any) => {
@@ -449,7 +461,9 @@ async function getServer(options: RunOptions = {}) {
       try {
         recordTokens(model, sessionUsageCache.get(req.sessionId));
       } catch (_) {}
-      decStreaming();
+      // Декремент НЕ здесь — onResponse не покрывает abort. Делает raw 'close'
+      // (зарегистрирован в onRequest, once-guard). На нормальном пути 'close'
+      // придёт сразу после onResponse -> метрики записаны, gauge декрементнут.
     }
   });
   // /metrics route — В getServer(), чтобы он был на ОБОИХ путях запуска: прямой
